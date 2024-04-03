@@ -1,36 +1,60 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
+from ultralytics import YOLO
+import cv2
+import os
+import yaml
 
-st.title('Uber pickups in NYC')
+# Load fruit-price information from YAML file
+with open('fruit_prices.yaml', 'r') as file:
+    fruit_prices = yaml.safe_load(file)
 
-DATE_COLUMN = 'date/time'
-DATA_URL = ('https://s3-us-west-2.amazonaws.com/'
-            'streamlit-demo-data/uber-raw-data-sep14.csv.gz')
+# Initialize YOLO model
+model = YOLO("../yolov8x.pt")
+names = model.names
 
-@st.cache_data
-def load_data(nrows):
-    data = pd.read_csv(DATA_URL, nrows=nrows)
-    lowercase = lambda x: str(x).lower()
-    data.rename(lowercase, axis='columns', inplace=True)
-    data[DATE_COLUMN] = pd.to_datetime(data[DATE_COLUMN])
-    return data
+# Function to process image and generate receipt
+def process_image(image_path):
+    im0 = cv2.imread(image_path)
+    h, w, _ = im0.shape
 
-data_load_state = st.text('Loading data...')
-data = load_data(10000)
-data_load_state.text("Done! (using st.cache_data)")
+    # Predict objects using YOLO model
+    results = model.predict(im0, show=False)
+    boxes = results[0].boxes.xyxy.cpu().tolist()
+    clss = results[0].boxes.cls.cpu().tolist()
 
-if st.checkbox('Show raw data'):
-    st.subheader('Raw data')
-    st.write(data)
+    # Initialize detected fruit counts
+    detected_fruits = {names[int(cls)]: 0 for _, cls in zip(boxes, clss)}
 
-st.subheader('Number of pickups by hour')
-hist_values = np.histogram(data[DATE_COLUMN].dt.hour, bins=24, range=(0,24))[0]
-st.bar_chart(hist_values)
+    if boxes is not None:
+        for box, cls in zip(boxes, clss):
+            # Count detected fruits
+            detected_fruits[names[int(cls)]] += 1
 
-# Some number in the range 0-23
-hour_to_filter = st.slider('hour', 0, 23, 17)
-filtered_data = data[data[DATE_COLUMN].dt.hour == hour_to_filter]
+    # Generate receipt
+    receipt = ""
+    total_price = 0
+    for fruit_info in fruit_prices:
+        fruit = fruit_info['fruit']
+        if fruit in detected_fruits:
+            price = fruit_info['price']
+            count = detected_fruits[fruit]
+            total_price += count * price
+            receipt += f"{fruit.capitalize()}s: {count}*{price}: {count * price} Ksh\n"
+    receipt += f"Total Price: {total_price} Ksh"
+    return receipt
 
-st.subheader('Map of all pickups at %s:00' % hour_to_filter)
-st.map(filtered_data)
+# Streamlit app UI
+st.title("Fruit Detector and Receipt Generator")
+
+uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Display uploaded image
+    st.image(uploaded_file, caption='Uploaded Image.', use_column_width=True)
+    
+    # Process image and generate receipt
+    receipt = process_image(uploaded_file.name)
+
+    # Display receipt
+    st.header("Receipt")
+    st.text(receipt)
